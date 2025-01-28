@@ -1,8 +1,11 @@
-import json
-import time
-from selenium import webdriver
+from selenium.webdriver.support.ui import Select
 from selenium.webdriver.common.by import By
+import time
+import json
+from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
+import smtplib
+from email.mime.text import MIMEText
 
 # Carregar configurações do config.json
 with open("config.json", "r") as config_file:
@@ -12,86 +15,100 @@ with open("config.json", "r") as config_file:
 service = Service('/usr/local/bin/chromedriver')
 driver = webdriver.Chrome(service=service)
 
-def realizar_login():
+# Função para enviar email
+def enviar_email(data_disponivel):
     try:
-        # Acessar o site
-        driver.get(config["url"])
-        time.sleep(5)  # Esperar a página carregar
+        remetente = config["email_remetente"]
+        senha = config["senha_remetente"]
+        destinatario = config["email_destinatario"]
+        assunto = "Data disponível para agendamento"
+        corpo = f"Uma nova data está disponível: {data_disponivel}"
 
-        # Preencher o campo de email/usuário
-        campo_email = driver.find_element(By.ID, "data.email")
-        campo_email.send_keys(config["usuario"])
-        print("Campo de email/usuário preenchido.")
+        mensagem = MIMEText(corpo)
+        mensagem["Subject"] = assunto
+        mensagem["From"] = remetente
+        mensagem["To"] = destinatario
 
-        # Preencher o campo de senha
-        campo_senha = driver.find_element(By.ID, "data.password")
-        campo_senha.send_keys(config["senha"])
-        print("Campo de senha preenchido.")
-
-        # Localizar e clicar no botão de login
-        botao_login = driver.find_element(By.CLASS_NAME, "fi-btn")
-        botao_login.click()
-        print("Botão de login clicado.")
-
-        # Esperar o site processar o login
-        time.sleep(5)
-        print("Login realizado com sucesso!")
-
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as servidor:
+            servidor.login(remetente, senha)
+            servidor.sendmail(remetente, destinatario, mensagem.as_string())
+        print(f"Email enviado com sucesso para {destinatario}.")
     except Exception as e:
-        print(f"Erro ao realizar login: {e}")
-        driver.quit()
+        print(f"Erro ao enviar email: {e}")
 
-def selecionar_tipo_visto():
+# Função para verificar as datas no calendário clicando mês a mês
+def verificar_calendario():
     try:
-        # Clicar no dropdown para abrir a lista de tipos de visto
-        dropdown = driver.find_element(By.CLASS_NAME, "choices__list--single")
-        dropdown.click()
+        # Abrir o calendário
+        campo_data = driver.find_element(By.ID, "data.appointment_date")
+        campo_data.click()
+        print("Calendário aberto.")
         time.sleep(2)
 
-        # Selecionar o tipo de visto pelo texto
-        tipo_visto = driver.find_element(By.XPATH, '//div[contains(text(), "VITEM XI - Family Reunification Visa")]')
-        tipo_visto.click()
-        print("Tipo de visto selecionado.")
+        # Localizar o dropdown de meses
+        select_mes = Select(driver.find_element(By.XPATH, '//select[@x-model="focusedMonth"]'))  # Selecionar o dropdown do mês
+        campo_ano = driver.find_element(By.XPATH, '//input[@x-model.debounce="focusedYear"]')  # Campo do ano
 
-        # Clicar no botão "Next" para avançar
-        botao_next = driver.find_element(By.XPATH, '//span[contains(text(), "Next")]/..')
-        botao_next.click()
-        print("Botão 'Next' clicado.")
-        time.sleep(5)
+        # Iterar pelos 5 primeiros meses (ajustando o ano se necessário)
+        for mes_index in range(5):
+            if mes_index >= len(select_mes.options):  # Se o índice exceder os meses disponíveis
+                campo_ano.clear()
+                campo_ano.send_keys(int(campo_ano.get_attribute("value")) + 1)  # Muda para o próximo ano
+                time.sleep(2)
+                select_mes = Select(driver.find_element(By.XPATH, '//select[@x-model="focusedMonth"]'))
 
-    except Exception as e:
-        print(f"Erro ao selecionar tipo de visto: {e}")
-        driver.quit()
+            # Selecionar o mês pelo índice
+            select_mes.select_by_index(mes_index)
+            print(f"Verificando o mês: {select_mes.options[mes_index].text}")
+            time.sleep(2)
 
-def verificar_disponibilidade():
-    try:
-        # Verificar se o calendário ou o próximo botão está presente
-        time.sleep(5)  # Aguarda o calendário carregar completamente
-
-        # Localizar possíveis datas no calendário
-        datas = driver.find_elements(By.CSS_SELECTOR, ".date-class")  # Ajuste conforme necessário
-        for dia in datas:
-            if "disabled" not in dia.get_attribute("class"):  # Verifica se o dia está habilitado
+            # Verificar dias habilitados no mês atual
+            dias = driver.find_elements(By.XPATH, '//div[contains(@class, "day") and not(contains(@class, "disabled"))]')
+            for dia in dias:
                 data_disponivel = dia.text
                 print(f"Data disponível encontrada: {data_disponivel}")
+                enviar_email(data_disponivel)
                 return True
 
-        print("Nenhuma data disponível no momento.")
+            # Verificar os motivos das datas desabilitadas
+            dias_desabilitados = driver.find_elements(By.XPATH, '//div[contains(@class, "day disabled")]')
+            for dia in dias_desabilitados:
+                motivo = dia.get_attribute("class")
+                print(f"Data desabilitada encontrada: {dia.text} - Motivo: {motivo}")
+
+        print("Nenhuma data disponível nos 5 primeiros meses.")
         return False
 
     except Exception as e:
-        print(f"Erro ao verificar disponibilidade: {e}")
+        print(f"Erro ao verificar o calendário: {e}")
         return False
 
 try:
     # Fluxo principal
-    realizar_login()  # Realiza o login no site
-    selecionar_tipo_visto()  # Seleciona o tipo de visto e avança
-    disponibilidade = verificar_disponibilidade()  # Verifica disponibilidade no calendário
+    driver.get(config["url"])
+    time.sleep(5)
+
+    # Realizar login
+    driver.find_element(By.ID, "data.email").send_keys(config["usuario"])
+    driver.find_element(By.ID, "data.password").send_keys(config["senha"])
+    driver.find_element(By.CLASS_NAME, "fi-btn").click()
+    print("Login realizado.")
+    time.sleep(5)
+
+    # Selecionar tipo de visto e clicar em "Next"
+    driver.find_element(By.CLASS_NAME, "choices__list--single").click()
+    time.sleep(2)
+    driver.find_element(By.XPATH, '//div[contains(text(), "VITEM XI - Family Reunification Visa")]').click()
+    driver.find_element(By.XPATH, '//span[contains(text(), "Next")]/..').click()
+    print("Avançou para a tela do calendário.")
+    time.sleep(5)
+
+    # Verificar datas no calendário
+    disponibilidade = verificar_calendario()
 
     if disponibilidade:
-        print("Horários disponíveis encontrados.")
+        print("Datas disponíveis encontradas.")
     else:
-        print("Não há horários disponíveis.")
+        print("Não há datas disponíveis nos 5 primeiros meses.")
 finally:
     driver.quit()
